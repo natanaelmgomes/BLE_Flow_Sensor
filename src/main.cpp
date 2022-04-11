@@ -280,10 +280,6 @@ void Flow_vTaskFunction( void * pvParameters )
     // Initialise the xLastWakeTime variable with the current time.
     xLastWakeTime = xTaskGetTickCount();
 
-    // int i = 0;
-
-    // portTICK_PERIOD_MS ;
-
     for( ;; )
     {
         // Wait for the next cycle.
@@ -296,17 +292,8 @@ void Flow_vTaskFunction( void * pvParameters )
             value_mv = read_ADS();
         }
 
-        Serial.print("value_mv ");
-        Serial.println(value_mv, 5);
-
         if (notify_enabled)
         {
-            // Serial.println("Write to char");
-            // uint16_t len = 20;
-            // char buf[len];
-            // String("T222").toCharArray(buf, len);
-            // float val = 1.1;
-            // Characteristic.write(buf, 4);
             
             characteristic.notify32(value_mv);
         }
@@ -405,17 +392,6 @@ void setup()
 
 void loop()
 {
-    // Forward data from HW Serial to BLEUART
-    // while (Serial.available())
-    // {
-    //     // Delay to wait for enough input, since we have a limited transmission buffer
-    //     delay(2);
-
-    //     uint8_t buf[64];
-    //     int count = Serial.readBytes(buf, sizeof(buf));
-    //     bleuart.write( buf, count );
-    // }
-
     // Get a raw ADC reading
     vbat_mv = readVBAT();
     // Convert from raw mv to percentage (based on LIPO chemistry)
@@ -423,36 +399,7 @@ void loop()
 
     blebas.write(vbat_per);
 
-    // Serial.println(vbat_mv);
-    // Serial.println(vbat_per);
 
-    // if (bleuart.notifyEnabled())
-    // {
-    //     char buf[64];
-    //     int count = snprintf(buf, 64, "%ld", counter++);
-    //     bleuart.write( buf, count );
-    // }
-
-    // if (notify_enabled)
-    // {
-    //     Serial.println("Write to char");
-    //     uint16_t len = 20;
-    //     char buf[len];
-    //     String("T222").toCharArray(buf, len);
-    //     float val = 1.1;
-    //     // Characteristic.write(buf, 4);
-    //     characteristic.notify32(val);
-    // }
-
-    // Serial.println((int32_t) read_ADS());
     delay(1000);
-
-    // Forward from BLEUART to HW Serial
-    // while ( bleuart.available() )
-    // {
-    //     uint8_t ch;
-    //     ch = (uint8_t) bleuart.read();
-    //     Serial.write(ch);
-    // }
 }
 
