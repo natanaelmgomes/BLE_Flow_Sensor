@@ -17,6 +17,36 @@
 #define ADS8881_MAX_SCALE     (131071.0)
 #define ADS8881_MV_PER_LSB    (3300.0 / ADS8881_MAX_SCALE)
 
+const byte interruptPin = 15;
+
+/* data read from the DATA register, byte 0*/
+uint8_t data_reg_spi_0;
+/* data read from the DATA register, byte 1*/
+uint8_t data_reg_spi_1;
+/* data read from the DATA register, byte 2*/
+uint8_t data_reg_spi_2;
+/* data read from the DATA register, byte 3*/
+uint8_t data_reg_spi_3;
+/* flag for data ready from MAX11270*/
+bool data_reg_ready = false;
+
+// MAX11210 8-bit Command unsigned char
+// ------------------------------------------------------------------------
+// name     B7         B6         B5     B4     B3     B2     B1     B0 
+// ------------------------------------------------------------------------
+// COMMAND  START = 1  MODE = 0   CAL   IMPD   RATE3  RATE2  RATE1  RATE0
+// COMMAND  START = 1  MODE = 1   RS4   RS3    RS2    RS1    RS0    R/!W
+// MAX11210 Status & control registers
+
+// ------------------------------------------------------------------------
+//     name     B7     B6     B5     B4     B3     B2     B1     B0
+// ------------------------------------------------------------------------
+// 0x0 STAT   INRESET  ERROR  —     —   PDSTAT1 PDSTAT0 RDERR AOR 
+//			   RATE3  RATE2 RATE1 RATE0  SYSGOR  DOR    MSTAT   RDY 
+// 0x1 CTRL1    EXTCK SYNCMODE PD1 PD0   U/~B   FORMAT  SCYCLE  CONTSC 
+// 0x2 CTRL2    DGAIN1 DGAIN0 BUFEN LPMODE PGAEN  PGAG2  PGAG1   PGAG0 
+// 0x3 CTRL3     —     —   ENMSYNC MODBITS DATA32  —     —       —
+
 // LED_BLUE
 // LED_RED
 
@@ -60,14 +90,27 @@ BLEUart bleuart;
 /* battery service */
 BLEBas  blebas;
 
-
 uint32_t ADS_value;
 
 const int chipSelectPin = 7;
-// const int MOSI_pin = 11;
+
 uint32_t counter = 0;
 
 bool notify_enabled = false;
+
+float values_50_Hz[5];
+uint8_t counter_50_Hz = 0;
+
+void request_continuous_read();
+void request_stop_continuous_read();
+
+float average(float * array, int len)  // assuming array is int.
+{
+  double sum = 0.0 ;  // sum will be larger than an item, long for safety.
+  for (int i = 0 ; i < len ; i++)
+    sum += array [i] ;
+  return  ((float) sum) / len ;  // average will be fractional, so float may be appropriate.
+}
 
 /* Sensor Measurement Task Handler */
 TaskHandle_t sensor_task_handle; 
@@ -80,6 +123,15 @@ void flow_sensor_notify_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint
     // Serial.println(value);
     notify_enabled = (value == 0x0001);
     Serial.println(notify_enabled);
+
+    if (notify_enabled)
+    {
+        request_continuous_read();
+    }
+    else
+    {
+        request_stop_continuous_read();
+    }
 
 }
 
@@ -114,47 +166,181 @@ void printBinary(byte inByte)
     }
 }
 
-/* Function to read the ADS8881 over SPI */
-float read_ADS()
+/* Helper function to print binary */
+void printBinary16(uint16_t inByte)
 {
-    digitalWrite(chipSelectPin, HIGH);
-    delay_ns(20);
-    digitalWrite(chipSelectPin, LOW);
-    delay_ns(10);
+    for (int b = 15; b >= 0; b--)
+    {
+        Serial.print(bitRead(inByte, b));
+    }
+}
 
-    byte ADS_data_high = SPI.transfer(0x00);
-    // ADS_data_high &= 0b00000011; //you only needs bits 1 and 0
-    byte ADS_data_mid = SPI.transfer(0x00);
-    byte ADS_data_low = SPI.transfer(0x00);
-
-    // printBinary(ADS_data_high);
-    // Serial.print(" ");
-    // printBinary(ADS_data_mid);
-    // Serial.print(" ");
-    // printBinary(ADS_data_low);
-    // Serial.print(" - ");
-
-    //combine the three parts into one 18-bit number:
-    int32_t result = ((ADS_data_high << 10) | (ADS_data_mid << 2) | (ADS_data_low >> 6));
-
+/* Helper function to print binary */
+void printBinary32(uint32_t inByte)
+{
     for (int b = 31; b >= 0; b--)
     {
-        Serial.print(bitRead(result, b));
+        Serial.print(bitRead(inByte, b));
     }
-    Serial.print(" - ");
+}
 
-    if (result > 131071)
-    {
-        result = result - 262143;
-    }
+void MAX11270_calibrate()
+{
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CAL = B10100000;
+    SPI.transfer(data_request_CAL);
+    digitalWrite(chipSelectPin, HIGH);
+    delay(200);
+}
 
-    
-    Serial.print("result ");
-    Serial.println(result);
+void print_STAT()
+{
+    Serial.print("STAT:  ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_STAT = B11000001;
+    SPI.transfer(data_request_STAT);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
 
-    float result_mv = (float) ((double) result * ADS8881_MV_PER_LSB);
+void print_CTRL1()
+{
+    Serial.print("CTRL1: ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CTRL1 = B11000011;
+    SPI.transfer(data_request_CTRL1);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
 
-    return result_mv;
+void print_CTRL2()
+{
+    Serial.print("CTRL2: ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CTRL2 = B11000101;
+    SPI.transfer(data_request_CTRL2);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
+
+void print_CTRL3()
+{
+    Serial.print("CTRL3: ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CTRL3 = B11000111;
+    SPI.transfer(data_request_CTRL3);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
+
+void print_CTRL4()
+{
+    Serial.print("CTRL4: ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CTRL4 = B11001001;
+    SPI.transfer(data_request_CTRL4);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
+
+void print_CTRL5()
+{
+    Serial.print("CTRL5: ");
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_CTRL5 = B11001011;
+    SPI.transfer(data_request_CTRL5);
+    uint8_t data_spi_2 = SPI.transfer(0x00);
+    printBinary(data_spi_2);
+    Serial.print(" ");
+    byte data_spi_3 = SPI.transfer(0x00);
+    printBinary(data_spi_3);
+    Serial.print(" ");
+    byte data_spi_4 = SPI.transfer(0x00);
+    printBinary(data_spi_4);
+    digitalWrite(chipSelectPin, HIGH);
+    Serial.println("");
+}
+
+void request_single_read()
+{
+    //Requesting single reading from MAX11270
+    digitalWrite(chipSelectPin, LOW);
+    byte data_request_single_read = B10000000;
+    SPI.transfer(data_request_single_read);
+    digitalWrite(chipSelectPin, HIGH);
+}
+
+void request_continuous_read(void)
+{
+    /*
+     * Change Control 1 register
+     * CTRL1    EXTCK SYNCMODE PD1 PD0   U/~B   FORMAT  SCYCLE  CONTSC 
+     *            0       0     0   0      1       1       1      1
+    */
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_write_ctrl1 = B11000010;
+    SPI.transfer(data_request_write_ctrl1);
+    uint8_t data_to_write_ctrl1 = B00001111;
+    SPI.transfer(data_to_write_ctrl1);
+    digitalWrite(chipSelectPin, HIGH);
+    print_CTRL1();
+    request_single_read();
+}
+
+void request_stop_continuous_read(void)
+{
+    /*
+     * Change Control 1 register
+     * CTRL1    EXTCK SYNCMODE PD1 PD0   U/~B   FORMAT  SCYCLE  CONTSC 
+     *            0       0     0   0      1       1       0      1
+    */
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_write_ctrl1 = B11000010;
+    SPI.transfer(data_request_write_ctrl1);
+    uint8_t data_to_write_ctrl1 = B00001110;
+    SPI.transfer(data_to_write_ctrl1);
+    digitalWrite(chipSelectPin, HIGH);
+    print_CTRL1();
 }
 
 /* Read battery voltage (mV) */
@@ -275,52 +461,57 @@ void Flow_vTaskFunction( void * pvParameters )
 {
     Serial.println("Thread started");
     TickType_t xLastWakeTime;
-    TickType_t xFrequency = 10000;
+    TickType_t xFrequency = 10;
+    // 102 / 1024 =~ 99.6 ms
+    // 10 / 1024 =~ 9.76 ms
+    // 1 / 1024 =~ 0,976 ms
 
     // Initialise the xLastWakeTime variable with the current time.
     xLastWakeTime = xTaskGetTickCount();
 
-    // int i = 0;
-
-    // portTICK_PERIOD_MS ;
-
     for( ;; )
     {
         // Wait for the next cycle.
-        vTaskDelayUntil( &xLastWakeTime, xFrequency );
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
 
-        // int32_t raw_value = 
-        float value_mv = read_ADS();
-        while (value_mv < 0)
-        {
-            value_mv = read_ADS();
-        }
+        if(data_reg_ready)
+        {   
+            data_reg_ready = false;
 
-        Serial.print("value_mv ");
-        Serial.println(value_mv, 5);
-
-        if (notify_enabled)
-        {
-            // Serial.println("Write to char");
-            // uint16_t len = 20;
-            // char buf[len];
-            // String("T222").toCharArray(buf, len);
-            // float val = 1.1;
-            // Characteristic.write(buf, 4);
+            uint32_t data_reg_spi = data_reg_spi_0;
+            data_reg_spi = data_reg_spi << 8;
+            data_reg_spi = data_reg_spi | data_reg_spi_1;
+            data_reg_spi = data_reg_spi << 8;
+            data_reg_spi = data_reg_spi | data_reg_spi_2;
             
-            characteristic.notify32(value_mv);
+            float data_reg_mili_volts = ((float) data_reg_spi / pow(2, 24)) * 3300;
+            
+            values_50_Hz[counter_50_Hz++] = data_reg_mili_volts;
+            if (counter_50_Hz > 4)
+            {
+                counter_50_Hz = 0;
+                data_reg_mili_volts = average(values_50_Hz, 5);
+                Serial.println((double) data_reg_mili_volts, 3);
+                if (notify_enabled)
+                {
+                    characteristic.notify32(data_reg_mili_volts);
+                }
+            }
         }
-
-        if (digitalRead(11))
-        {
-            xFrequency = 1000;
-        }
-        else
-        {
-            xFrequency = 10000;
-        }
-
     }
+}
+
+void data_ready()
+{
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_read_data = B11001101;
+    SPI.transfer(data_request_read_data);
+    data_reg_spi_0 = SPI.transfer(0x00);
+    data_reg_spi_1 = SPI.transfer(0x00);
+    data_reg_spi_2 = SPI.transfer(0x00);
+    data_reg_spi_3 = SPI.transfer(0x00);
+    digitalWrite(chipSelectPin, HIGH);
+    data_reg_ready = true;
 }
 
 void setup()
@@ -329,9 +520,10 @@ void setup()
 
     delay_ns(50);
     SPI.begin();
-    SPI.beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE3));
+    SPI.beginTransaction(SPISettings(5000000, MSBFIRST, SPI_MODE0));
     pinMode(chipSelectPin, OUTPUT);
-    pinMode(11, INPUT);
+    pinMode(interruptPin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(interruptPin), data_ready, FALLING);
 
 #if CFG_DEBUG
     // Blocking wait for connection when debug mode is enabled via IDE
@@ -341,6 +533,7 @@ void setup()
     // vNopDelayMS(1000); // prevents usb driver crash on startup, do not omit this
     // while(!Serial);
 
+    Serial.println("");
     Serial.println("BLE Flow Sensor Device");
     Serial.println("----------------------\n");
     Serial.print("configCPU_CLOCK_HZ: ");
@@ -351,6 +544,49 @@ void setup()
     Serial.println(portTICK_PERIOD_MS);
     Serial.print("Calculated portTICK_PERIOD_MS: ");
     Serial.println(1000.0 / (float)configTICK_RATE_HZ);
+
+
+    print_STAT();
+    print_CTRL1();
+    print_CTRL2();
+    print_CTRL3();
+    print_CTRL4();
+    print_CTRL5();
+
+    Serial.println("");
+    Serial.println("Changing the registers.");
+
+    /*
+     * Change Control 1 register
+     * CTRL1    EXTCK SYNCMODE PD1 PD0   U/~B   FORMAT  SCYCLE  CONTSC 
+     *            0       0     0   0      1       1       1      0
+    */
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_write_ctrl1 = B11000010;
+    SPI.transfer(data_request_write_ctrl1);
+    uint8_t data_to_write_ctrl1 = B00001110;
+    SPI.transfer(data_to_write_ctrl1);
+    digitalWrite(chipSelectPin, HIGH);
+
+    print_CTRL1();
+    
+    /*
+     * Change Control 2 register
+     CTRL2    DGAIN1 DGAIN0 BUFEN LPMODE PGAEN  PGAG2  PGAG1   PGAG0 
+                0       0     0     0      0       0       0      0
+    */
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_write_ctrl2 = B11000100;
+    SPI.transfer(data_request_write_ctrl2);
+    uint8_t data_to_write_ctrl2 = B00100000;
+    SPI.transfer(data_to_write_ctrl2);
+    digitalWrite(chipSelectPin, HIGH);
+
+    print_CTRL2();
+    Serial.println("");
+    Serial.println("Calling self calibration.");
+    MAX11270_calibrate();
+    Serial.println("");
 
     // Setup the BLE LED to be enabled on CONNECT
     // Note: This is actually the default behavior, but provided
@@ -400,59 +636,20 @@ void setup()
     bleuart.write( buf, count );
 
     xTaskCreate(Flow_vTaskFunction,       "BLE Flow Task", 256, NULL,    tskIDLE_PRIORITY + 3,    &sensor_task_handle);
-    
 }
 
 void loop()
 {
-    // Forward data from HW Serial to BLEUART
-    // while (Serial.available())
-    // {
-    //     // Delay to wait for enough input, since we have a limited transmission buffer
-    //     delay(2);
-
-    //     uint8_t buf[64];
-    //     int count = Serial.readBytes(buf, sizeof(buf));
-    //     bleuart.write( buf, count );
-    // }
-
     // Get a raw ADC reading
     vbat_mv = readVBAT();
     // Convert from raw mv to percentage (based on LIPO chemistry)
     vbat_per = mvToPercent(vbat_mv);
-
+    // Write to BLE battery service
     blebas.write(vbat_per);
+    
+    // request_single_read();
 
-    // Serial.println(vbat_mv);
-    // Serial.println(vbat_per);
-
-    // if (bleuart.notifyEnabled())
-    // {
-    //     char buf[64];
-    //     int count = snprintf(buf, 64, "%ld", counter++);
-    //     bleuart.write( buf, count );
-    // }
-
-    // if (notify_enabled)
-    // {
-    //     Serial.println("Write to char");
-    //     uint16_t len = 20;
-    //     char buf[len];
-    //     String("T222").toCharArray(buf, len);
-    //     float val = 1.1;
-    //     // Characteristic.write(buf, 4);
-    //     characteristic.notify32(val);
-    // }
-
-    // Serial.println((int32_t) read_ADS());
-    delay(1000);
-
-    // Forward from BLEUART to HW Serial
-    // while ( bleuart.available() )
-    // {
-    //     uint8_t ch;
-    //     ch = (uint8_t) bleuart.read();
-    //     Serial.write(ch);
-    // }
+    // Serial.println("");
+    delay(500);
 }
 
