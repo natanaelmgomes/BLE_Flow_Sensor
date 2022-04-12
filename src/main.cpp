@@ -63,9 +63,15 @@ BLEBas  blebas;
 
 uint32_t ADS_value;
 
-const int chipSelectPin = 7;
+const int DRDY_pin = 7;
 // const int MOSI_pin = 11;
 uint32_t counter = 0;
+
+bool data_reg_ready = false;
+
+uint8_t ADS_data_high;
+uint8_t ADS_data_mid;
+uint8_t ADS_data_low;
 
 bool notify_enabled = false;
 
@@ -117,25 +123,8 @@ void printBinary(byte inByte)
 /* Function to read the ADS8881 over SPI */
 float read_ADS()
 {
-    digitalWrite(chipSelectPin, HIGH);
-    delay_ns(20);
-    digitalWrite(chipSelectPin, LOW);
-    delay_ns(10);
-
-    byte ADS_data_high = SPI.transfer(0x00);
-    // ADS_data_high &= 0b00000011; //you only needs bits 1 and 0
-    byte ADS_data_mid = SPI.transfer(0x00);
-    byte ADS_data_low = SPI.transfer(0x00);
-
-    // printBinary(ADS_data_high);
-    // Serial.print(" ");
-    // printBinary(ADS_data_mid);
-    // Serial.print(" ");
-    // printBinary(ADS_data_low);
-    // Serial.print(" - ");
-
     //combine the three parts into one 18-bit number:
-    int32_t result = ((ADS_data_high << 10) | (ADS_data_mid << 2) | (ADS_data_low >> 6));
+    int32_t result = ((ADS_data_high << 16) | (ADS_data_mid << 8) | (ADS_data_low));
 
     for (int b = 31; b >= 0; b--)
     {
@@ -153,7 +142,7 @@ float read_ADS()
     Serial.println(result);
 
     float result_mv = (float) ((double) result * ADS8881_MV_PER_LSB);
-
+    data_reg_ready = false;
     return result_mv;
 }
 
@@ -275,7 +264,10 @@ void Flow_vTaskFunction( void * pvParameters )
 {
     Serial.println("Thread started");
     TickType_t xLastWakeTime;
-    TickType_t xFrequency = 10000;
+    TickType_t xFrequency = 1;
+    // 102 / 1024 =~ 99.6 ms
+    // 10 / 1024 =~ 9.76 ms
+    // 1 / 1024 =~ 0,976 ms
 
     // Initialise the xLastWakeTime variable with the current time.
     xLastWakeTime = xTaskGetTickCount();
@@ -285,29 +277,26 @@ void Flow_vTaskFunction( void * pvParameters )
         // Wait for the next cycle.
         vTaskDelayUntil( &xLastWakeTime, xFrequency );
 
-        // int32_t raw_value = 
-        float value_mv = read_ADS();
-        while (value_mv < 0)
+        if(data_reg_ready)
         {
-            value_mv = read_ADS();
+            float value_mv = read_ADS();
+            Serial.println(value_mv);
+            if (notify_enabled)
+            {
+                characteristic.notify32(value_mv);
+            }
         }
-
-        if (notify_enabled)
-        {
-            
-            characteristic.notify32(value_mv);
-        }
-
-        if (digitalRead(11))
-        {
-            xFrequency = 1000;
-        }
-        else
-        {
-            xFrequency = 10000;
-        }
-
     }
+}
+
+void data_ready()
+{
+    detachInterrupt(digitalPinToInterrupt(DRDY_pin));
+    ADS_data_high = SPI.transfer(0x00);
+    ADS_data_mid = SPI.transfer(0x00);
+    ADS_data_low = SPI.transfer(0x00);
+    attachInterrupt(digitalPinToInterrupt(DRDY_pin), data_ready, FALLING);
+    data_reg_ready = true;
 }
 
 void setup()
@@ -317,7 +306,8 @@ void setup()
     delay_ns(50);
     SPI.begin();
     SPI.beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE3));
-    pinMode(chipSelectPin, OUTPUT);
+    pinMode(DRDY_pin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(DRDY_pin), data_ready, FALLING);
     pinMode(11, INPUT);
 
 #if CFG_DEBUG
