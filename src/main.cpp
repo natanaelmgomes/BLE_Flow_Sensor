@@ -312,15 +312,29 @@ void request_single_read()
 
 void request_continuous_read(void)
 {
+    // MAX11210 8-bit Command unsigned char
+    // ------------------------------------------------------------------------
+    // name     B7         B6         B5     B4     B3     B2     B1     B0 
+    // ------------------------------------------------------------------------
+    // COMMAND  START = 1  MODE = 0   CAL   IMPD   RATE3  RATE2  RATE1  RATE0
+    // COMMAND  START = 1  MODE = 1   RS4   RS3    RS2    RS1    RS0    R/!W
+    digitalWrite(chipSelectPin, LOW);
+    uint8_t data_request_single_read = B10000000;
+    SPI.transfer(data_request_single_read);
+    digitalWrite(chipSelectPin, HIGH);
+    digitalWrite(chipSelectPin, LOW);
+    data_request_single_read = B10100000; // calibrate
+    SPI.transfer(data_request_single_read);
+    digitalWrite(chipSelectPin, HIGH);
     /*
      * Change Control 1 register
      * CTRL1    EXTCK SYNCMODE PD1 PD0   U/~B   FORMAT  SCYCLE  CONTSC 
-     *            0       0     0   0      1       1       0      1
+     *            0       0     0   0      1       1       1      1
     */
     digitalWrite(chipSelectPin, LOW);
     uint8_t data_request_write_ctrl1 = B11000010;
     SPI.transfer(data_request_write_ctrl1);
-    uint8_t data_to_write_ctrl1 = B00001101;
+    uint8_t data_to_write_ctrl1 = B00001111;
     SPI.transfer(data_to_write_ctrl1);
     digitalWrite(chipSelectPin, HIGH);
     print_CTRL1();
@@ -331,12 +345,12 @@ void request_continuous_read(void)
     // COMMAND  START = 1  MODE = 0   CAL   IMPD   RATE3  RATE2  RATE1  RATE0
     // COMMAND  START = 1  MODE = 1   RS4   RS3    RS2    RS1    RS0    R/!W
     digitalWrite(chipSelectPin, LOW);
-    byte data_request_single_read = B10100000; // calibrate
+    data_request_single_read = B10100000; // calibrate
     SPI.transfer(data_request_single_read);
     digitalWrite(chipSelectPin, HIGH);
 
     digitalWrite(chipSelectPin, LOW);
-    data_request_single_read = B10000100;
+    data_request_single_read = B10000000;
     SPI.transfer(data_request_single_read);
     digitalWrite(chipSelectPin, HIGH);
 }
@@ -618,13 +632,13 @@ void setup()
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
-    Bluefruit.setName("Flow Sensor");
+    Bluefruit.setName("Sensor");
 
     // // To be consistent OTA DFU should be added first if it exists
     // bledfu.begin();
 
     // Configure and Start Device Information Service
-    bledis.setManufacturer("RUG");
+    bledis.setManufacturer("Sencilia");
     bledis.setModel("Sencilia Sensor");
     bledis.begin();
 
